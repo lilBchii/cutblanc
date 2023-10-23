@@ -15,4 +15,4 @@ Convert mp3 to WAV:
 ```
 cargo run convert input_file.mp3 path/to/new/file.wav
 ```
-code from [this repo](https://github.com/tinashe-mundangepfupfu/mp3ToWavConverter)
+code for the converter from [this repo](https://github.com/tinashe-mundangepfupfu/mp3ToWavConverter)
