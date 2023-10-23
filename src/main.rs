@@ -4,6 +4,7 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use colored::Colorize;
 
 const LIM_VAL: i32 = 100;
 
@@ -187,6 +188,16 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 4 {
+        println!("{}:", "USAGE".bold());
+        println!(
+            "    {} [ACTION] [input_file] [output_file]",
+            "cutblanc".bold()
+        );
+        println!("{}:", "ACTIONS".bold());
+        println!("    {}      to cut silences", "- cut".bold());
+        println!("    {}  to convert a mp3 to wav", "- convert".bold());
+        std::process::exit(1);
+
         eprintln!("Usage: {} <action> <input_file> <output_file>", &args[0]);
         std::process::exit(1);
     } else {
