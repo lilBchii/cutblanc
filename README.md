@@ -9,5 +9,5 @@ A stupid silence cutter for wav files
 ## Usage 
 Cut silences:
 ```
-cutbalnc input_file.wav path/to/new/file.wav
+cutblanc path/to/input_file.wav path/to/output_file.wav
 ```
