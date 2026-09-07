@@ -1,212 +1,111 @@
+use clap::Parser;
 use hound::*;
-use minimp3::{Decoder, Frame};
-use std::env;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-use colored::Colorize;
+use std::{fs::File, io::BufReader, path::Path};
 
-const LIM_VAL: i32 = 100;
+const LIM_AMPLITUDE: i32 = 100;
+const DEFAULT_DURATION: usize = 1000;
 
-fn convert_mp3_to_wav(input_file: &String, output_file: &String) -> () {
-    // Read the MP3 file
-    let mut mp3_data = Vec::new();
-    let mut file = File::open(&input_file).expect("Failed to open input file");
-    file.read_to_end(&mut mp3_data)
-        .expect("Failed to read input file");
-
-    // Create the MP3 decoder
-    let mut decoder = Decoder::new(mp3_data.as_slice());
-
-    let loop_duration = 10.0; // Duration in seconds to play output sound
-    let mut samples_written = 0;
-
-    let mut decoded_data = Vec::new();
-    let mut sample_rate = 0;
-    let mut channels = 0;
-
-    // Decode MP3 frames
-    loop {
-        match decoder.next_frame() {
-            Ok(Frame {
-                data,
-                sample_rate: frame_sample_rate,
-                channels: frame_channels,
-                ..
-            }) => {
-                if sample_rate == 0 {
-                    sample_rate = frame_sample_rate;
-                    channels = frame_channels;
-                }
-                decoded_data.extend_from_slice(&data);
-            }
-            Err(minimp3::Error::Eof) => break,
-            Err(e) => {
-                eprintln!("Error decoding MP3: {:?}", e);
-                std::process::exit(1);
-            }
-        }
-    }
-
-    // Apply fade-in and fade-out effects
-    let fade_duration = 1.0; // Fade duration in seconds
-    apply_fade_in_fade_out(&mut decoded_data, channels, fade_duration, sample_rate);
-
-    // Calculate target samples count for looped output
-    let target_samples = (loop_duration * sample_rate as f64 * channels as f64).ceil() as usize;
-
-    // Initialize WAV writer
-    let spec = WavSpec {
-        channels: channels as _,
-        sample_rate: sample_rate as _,
-        bits_per_sample: 16,
-        sample_format: SampleFormat::Int,
-    };
-
-    let path = Path::new(output_file);
-    let mut wav_writer = WavWriter::create(path, spec).expect("Failed to create WAV file");
-
-    // Write samples to the WAV file, looping until the desired length is reached
-    while samples_written < target_samples {
-        for sample in &decoded_data {
-            wav_writer
-                .write_sample(*sample)
-                .expect("Failed to write to WAV file");
-            samples_written += 1;
-            if samples_written >= target_samples {
-                break;
-            }
-        }
-    }
-
-    println!("Conversion completed.");
+#[derive(Parser)]
+#[command(about = "Cuts silences in wav files.")]
+struct Args {
+    /// The limit value of amplitude under which you want to cut the samples
+    #[arg(short, long, default_value_t = LIM_AMPLITUDE)]
+    limit_amplitude: i32,
+    /// The minimum duration (in samples) to consider a silence to cut
+    #[arg(short, long, default_value_t = DEFAULT_DURATION)]
+    duration: usize,
+    /// The file to work on
+    input_file: String,
+    /// The destination file
+    output_file: String,
 }
 
-fn apply_fade_in_fade_out(
-    data: &mut Vec<i16>,
-    channels: usize,
-    fade_duration: f64,
-    sample_rate: i32,
-) {
-    let fade_samples = (fade_duration * sample_rate as f64).ceil() as usize;
-
-    for i in 0..fade_samples {
-        let factor = i as f64 / fade_samples as f64;
-        for channel in 0..channels {
-            let idx = i * channels + channel;
-            data[idx] = (data[idx] as f64 * factor).round() as i16;
-        }
-    }
-
-    let total_samples = data.len() / channels;
-    for i in (total_samples - fade_samples..total_samples).rev() {
-        let factor = (total_samples - i) as f64 / fade_samples as f64;
-        for channel in 0..channels {
-            let idx = i * channels + channel;
-            data[idx] = (data[idx] as f64 * factor).round() as i16;
-        }
-    }
-}
-
-fn cutblanc(input_file: &String, output_file: &String) -> () {
-    println!("Opening file...");
-    let mut reader = WavReader::open(input_file).unwrap();
-    let spec = reader.spec();
-
-    //Values of each sample
-    let mut ampl = Vec::new();
+fn cutblanc(
+    reader: &mut WavReader<BufReader<File>>,
+    limit_amplitude: i32,
+    duration: usize,
+) -> Result<Vec<i32>> {
+    // Values of each sample
+    let mut amplitudes = Vec::with_capacity(reader.len() as usize);
+    // Counts how many samples have amplitude < limit_amplitude in a row
+    let mut count = 0;
 
     for n in reader.samples::<i32>() {
-        if let Ok(num) = n {
-            ampl.push(num);
-        } else {
-            ampl.push(0);
-            //panic!("failed to read sample value!");
-        }
-    }
-
-    println!("Ok!");
-    println!("Cutting silences...");
-
-    // Remove silences
-    let l = ampl.len();
-    let mut res = Vec::new();
-
-    let mut ind = 0;
-    let mut count = 0;
-    while ind < l {
-        let val = ampl[ind];
-        if val.abs() <= LIM_VAL {
+        let amplitude = n.unwrap_or(0);
+        if amplitude.abs() <= limit_amplitude {
             count += 1;
-            ind += 1;
-        } else {
-            if count < 1000 {
-                for i in ind - count..=ind {
-                    res.push(ampl[i]);
-                }
-            } else {
-                res.push(val);
+            if count < duration {
+                amplitudes.push(amplitude);
             }
+        } else {
+            amplitudes.push(amplitude);
             count = 0;
-            ind += 1;
         }
     }
 
-    println!("Ok!");
-    println!(
-        "from {}s to {}s",
-        l as f32 / spec.sample_rate as f32,
-        res.len() as f32 / spec.sample_rate as f32
-    );
+    Ok(amplitudes)
+}
 
-    println!("Writting file...");
-
-    // Write new file from cleaned samples
-    let path: &Path = output_file.as_ref();
-
-    let mut writer = match path.is_file() {
-        true => {
-            println!("Appends to {}", output_file);
-            WavWriter::append(path).unwrap()
-        }
-        false => WavWriter::create(path, reader.spec()).unwrap(),
-    };
-
-    assert_eq!(reader.spec(), writer.spec());
-
-    //Write new audio
-    for t in 0..res.len() {
-        writer.write_sample(res[t] as i32).unwrap();
-    }
-
-    //writer.finalize().unwrap();
-    println!("Done")
+fn write_to_path(data: &[i32], spec: WavSpec, path: &Path) -> Result<()> {
+    let mut writer = WavWriter::create(path, spec)?;
+    data.iter()
+        .try_for_each(|sample| writer.write_sample(*sample))?;
+    writer.finalize()
 }
 
 fn main() {
-    //env::set_var("RUST_BACKTRACE", "1");
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
+    match WavReader::open(args.input_file) {
+        Err(err) => eprintln!("{err}"),
+        Ok(mut reader) => match cutblanc(&mut reader, args.limit_amplitude, args.duration) {
+            Ok(data) => {
+                println!(
+                    "Audio duration decreased from {}s to {}s",
+                    reader.duration() as f32 / reader.spec().sample_rate as f32,
+                    data.len() as f32
+                        / reader.spec().channels as f32
+                        / reader.spec().sample_rate as f32
+                );
+                match write_to_path(&data, reader.spec(), args.output_file.as_ref()) {
+                    Ok(()) => {
+                        println!(
+                            "New audio written to {}",
+                            Path::new(&args.output_file).to_string_lossy()
+                        );
+                    }
+                    Err(err) => eprintln!("{err}"),
+                }
+            }
+            Err(err) => eprintln!("{err}"),
+        },
+    }
+}
 
-    if args.len() != 4 {
-        println!("{}:", "USAGE".bold());
-        println!(
-            "    {} [ACTION] [input_file] [output_file]",
-            "cutblanc".bold()
-        );
-        println!("{}:", "ACTIONS".bold());
-        println!("    {}      to cut silences", "- cut".bold());
-        println!("    {}  to convert a mp3 to wav", "- convert".bold());
-        std::process::exit(1);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        eprintln!("Usage: {} <action> <input_file> <output_file>", &args[0]);
-        std::process::exit(1);
-    } else {
-        for arg in args.iter() {
-            if arg == "cut" {
-                cutblanc(&args[2], &args[3]);
-            } else if arg == "convert" {
-                convert_mp3_to_wav(&args[2], &args[3]);
+    #[test]
+    fn test_main_loop() {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create("test.wav", spec).unwrap();
+        for t in 0..44100 {
+            if t > 250 {
+                writer.write_sample(10000 as i16).unwrap();
+            } else {
+                writer.write_sample(0 as i16).unwrap();
             }
         }
+
+        writer.finalize().unwrap();
+
+        let mut reader = hound::WavReader::open("test.wav").unwrap();
+        let cut = cutblanc(&mut reader, 300, 100).unwrap();
+        assert_eq!(cut.len(), 44100 - 152)
     }
 }
