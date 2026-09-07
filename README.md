@@ -9,5 +9,5 @@ A stupid silence cutter for wav files
 ## Usage 
 Cut silences:
 ```
-cargo run cut input_file.wav path/to/new/file.wav
+cutbalnc input_file.wav path/to/new/file.wav
 ```
